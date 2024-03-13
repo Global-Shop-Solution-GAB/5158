@@ -1,0 +1,282 @@
+Program.Sub.Preflight.Start
+Program.External.Include.Library("450100.lib")
+Program.External.Include.Library("2003.lib")
+V.Global.sWOList.Declare(String)
+V.Global.sTopJob.Declare(String)
+V.Global.sTopSuf.Declare(String)
+V.Global.sTopWO.Declare(String)
+V.Global.sCostMethod.Declare(String)
+V.Global.fShipQty.Declare(Float)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Author: Bix
+'Date: 8/21/2018
+'Customer: Whittle Flooring Company Limited
+'GCG_5158_BackflushCloseWOonPL.g2u
+'At the Shipments New screen, Backflush WO amt that is equal to the amt being shipped
+'Get WO # from SO-Line combo (SO-Line and Ship Qty are in the BDF)
+V.Local.sError.Declare(String)
+F.Intrinsic.Control.Try
+
+F.Intrinsic.Control.If(V.Caller.Hook,=,28530)
+	F.Intrinsic.Control.CallSub(ReadBDFGetJobs,"sOtherSubroutine",V.Ambient.CurrentSubroutine)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.ReadBDFGetJobs.Start
+'Read in BDF and pull the Order No and Line in a loop
+'Use order and line to see if a WO is attached and then check the WO and it's children
+V.Local..BulkDeclareString(sError,sSO,sSQL,sRet)
+V.Local.sLine.Declare(String)
+V.Local.sLineFilter.Declare(String)
+V.Local.sQty.Declare(String)
+V.Local.sWaitDialog.Declare(String)
+V.Local.iCnt.Declare(Long)
+V.Local.iJob.Declare(Long)
+V.Local.iBDFUBound.Declare(Long)
+V.Local.iMethod.Declare(Long)
+F.Intrinsic.Control.Try
+
+'Get Pricing Option
+F.Global.General.ReadOption("401163",3,4,V.Local.iMethod)
+F.Intrinsic.Control.SelectCase(V.Local.iMethod)
+	F.Intrinsic.Control.Case(1)
+		V.Global.sCostMethod.Set("P")
+	F.Intrinsic.Control.Case(2)
+		V.Global.sCostMethod.Set("E")
+	F.Intrinsic.Control.Case(3)
+		V.Global.sCostMethod.Set("I")
+	F.Intrinsic.Control.Case(4)
+		V.Global.sCostMethod.Set("A")
+	F.Intrinsic.Control.Case(5)
+		V.Global.sCostMethod.Set("R")
+	F.Intrinsic.Control.Case(6)
+		V.Global.sCostMethod.Set("L")
+	F.Intrinsic.Control.Case
+F.Intrinsic.Control.EndSelect
+
+F.Intrinsic.BDF.Load("SHIPMENT","AUX001")
+F.Intrinsic.BDF.ReadRowCount("SHIPMENT",V.Local.iBDFUBound)
+F.Intrinsic.Math.Sub(V.Local.iBDFUBound,1,V.Local.iBDFUBound)
+
+F.ODBC.Connection!con.OpenCompanyConnection
+'Create DTs and DVs of relevant data to make changes to WOs
+F.Data.DataTable.CreateFromSQL("dtLines","con","select ORDER_NO, RECORD_NO as ORDER_LINE, QTY_ORDERED, QTY_SHIPPED, FLAG_SO_TO_WO, PART, LOCATION from V_ORDER_LINES;",True)
+F.Data.DataView.Create("dtLines","dvLine",22)
+F.Data.DataTable.CreateFromSQL("dtSOstoWOs","con","select ORDER_NO, ORDER_LINE, JOB, SUFFIX from V_ORDER_TO_WO;",True)
+F.Data.DataView.Create("dtSOstoWOs","dvSOtoWO",22)
+F.Data.DataTable.CreateFromSQL("dtJobs","con","select JOB, SUFFIX, DATE_CLOSED, PARENT_WO as P_JOB, PARENT_SUFFIX_PARENT as P_SUF, QTY_ORDER, QTY_COMPLETED from V_JOB_HEADER;",True)
+F.Data.DataView.Create("dtJobs","dvJob",22)
+F.ODBC.Connection!con.Close
+
+F.Intrinsic.Control.For(V.Local.iCnt,V.Local.iBDFUBound)
+'Get SO and Line # from BDF and go to town on their WOs
+	'Grab SO #
+	F.Intrinsic.BDF.TextMatrix("SHIPMENT",0,V.Local.iCnt,V.Local.sSO)
+	F.Intrinsic.String.LPad(V.Local.sSO,"0",7,V.Local.sSO)
+	'Grab SO Line
+	F.Intrinsic.BDF.TextMatrix("SHIPMENT",1,V.Local.iCnt,V.Local.sLine)
+	F.Intrinsic.String.LPad(V.Local.sLine,"0",3,V.Local.sLine)
+	F.Intrinsic.String.Build("{0}0",V.Local.sLine,V.Local.sLine)
+	F.Intrinsic.String.Build("ORDER_NO = '{0}' and ORDER_LINE = '{1}'",V.Local.sSO,V.Local.sLine,V.Local.sLineFilter)
+	'Grab qty being shipped
+	F.Intrinsic.BDF.TextMatrix("SHIPMENT",3,V.Local.iCnt,V.Local.sQty)
+	F.Intrinsic.Math.ConvertToFloat(V.Local.sQty,V.Global.fShipQty)
+	
+	'Update SO Lines DV filter to display Specific SO Line from current line of BDF
+	F.Data.DataView.SetFilter("dtLines","dvLine",V.Local.sLineFilter)
+	F.Intrinsic.Control.If(V.DataView.dtLines!dvLine(0).FLAG_SO_TO_WO!FieldValTrim,=,"Y","and",V.Global.fShipQty,>,0)
+	'SO Line is flagged to have a WO
+		'Update So to WO filter to look at WOs tied to current SO Line
+		F.Data.DataView.SetFilter("dtSOstoWOs","dvSOtoWO",V.Local.sLineFilter)
+		F.Intrinsic.Control.For(V.Local.iJob,V.DataView.dtSOstoWOs!dvSOtoWO.RowCount--)
+		'Begin the recursion (if needed)
+			F.Intrinsic.Control.If(V.Global.fShipQty,>,0)
+				V.Global.sTopJob.Set(V.DataView.dtSOstoWOs!dvSOtoWO(V.Local.iJob).JOB!FieldVal)
+				V.Global.sTopSuf.Set(V.DataView.dtSOstoWOs!dvSOtoWO(V.Local.iJob).SUFFIX!FieldVal)
+				'Reset the WO List to start again
+				V.Global.sWOList.Set("")
+				F.Intrinsic.String.Build("{0}-{1}",V.Global.sTopJob.Trim,V.Global.sTopSuf.Trim,V.Global.sTopWO)
+				F.Intrinsic.String.Build("Backflushing WO#{0} and children WOs",V.Global.sTopWO,V.Local.sWaitDialog)
+				F.Intrinsic.UI.InvokeWaitDialog("Searching for WOs...",V.Local.sWaitDialog)
+				F.Intrinsic.UI.SetWaitDialogAlwaysOnTop(True)
+				F.Intrinsic.Control.CallSub(GetChildrenBackFlushWOs,"sJob",V.Global.sTopJob,"sSuf",V.Global.sTopSuf)
+				F.Intrinsic.UI.CloseWaitDialog
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.Next(V.Local.iJob)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {3}->{2}{1}Error Occurred {4} with description {5}{1}{1}GAB Version: {6}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Args.sOtherSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.ReadBDFGetJobs.End
+
+Program.Sub.GetChildrenBackFlushWOs.Start
+'Generate List of Children WOs from V.Args.sJob and V.Args.sSuf
+V.Local..BulkDeclareString(sError,sJobFilter)
+V.Local.sChildView.Declare(String)
+V.Local.sWO.Declare(String)
+V.Local.sWaitDialog.Declare(String)
+V.Local.iCnt.Declare(Long)
+V.Local.fQty.Declare(Float)
+V.Local.fPer.Declare(Float)
+V.Local.fRem.Declare(Float)
+V.Local.bJobCheck.Declare(Boolean)
+V.Local.sJobDV.Declare(String)
+V.Local.sSufDV.Declare(String)
+V.Local.sSQL.Declare(String)
+V.Local.sPart.Declare(String)
+V.Local.sRev.Declare(String)
+V.Local.sParams.Declare(String)
+
+'See if we have been at this point in the program with the WO passed to Args, if we have, exit the sub
+F.Intrinsic.String.Build("{0}-{1}",V.Args.sJob.Trim,V.Args.sSuf.Trim,V.Local.sWO)
+F.Intrinsic.String.IsInString(V.Global.sWOList,V.Local.sWO,True,V.Local.bJobCheck)
+F.Intrinsic.Control.If(V.Local.bJobCheck)
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.If(V.Global.sWOList.Length,=,0)
+	V.Global.sWOList.Set(V.Local.sWO)
+F.Intrinsic.Control.Else
+	F.Intrinsic.String.Build("{0}*!*{1}",V.Global.sWOList,V.Local.sWO,V.Global.sWOList)
+F.Intrinsic.Control.EndIf
+
+'Create DV of list of potential children WOs for this WO
+F.Intrinsic.String.Replace(V.Args.sJob," ","-",V.Local.sJobDV)
+F.Intrinsic.String.Replace(V.Args.sSuf," ","-",V.Local.sSufDV)
+F.Intrinsic.String.Build("dvChildrenOf{0}{1}",V.Local.sJobDV,V.Local.sSufDV,V.Local.sChildView)
+F.Intrinsic.String.Build("P_JOB = '{0}' and P_SUF = '{1}' and DATE_CLOSED = '1900-01-01'",V.Args.sJob,V.Args.sSuf,V.Local.sJobFilter)
+F.Data.DataView.Create("dtJobs",V.Local.sChildView,22,V.Local.sJobFilter,"JOB asc, SUFFIX asc")
+
+'loop through list
+F.Intrinsic.Control.For(V.Local.iCnt,V.DataView.dtJobs![V.Local.sChildView].RowCount--)
+	'recursion AHOY
+	F.Intrinsic.Control.CallSub(GetChildrenBackFlushWOs,"sJob",V.DataView.dtJobs![V.Local.sChildView](V.Local.iCnt).JOB!FieldVal,"sSuf",V.DataView.dtJobs![V.Local.sChildView](V.Local.iCnt).SUFFIX!FieldVal)
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+F.Data.DataView.Close("dtJobs",V.Local.sChildView)
+
+'Update Job view to get info on current WO
+F.Intrinsic.String.Build("JOB = '{0}' and SUFFIX = '{1}'",V.Args.sJob,V.Args.sSuf,V.Local.sJobFilter)
+F.Data.DataView.SetFilter("dtJobs","dvJob",V.Local.sJobFilter)
+
+F.Intrinsic.String.Build("select JOB, SUFFIX, SEQ, LMO, PART, FLAG_CLOSED, DATE_COMPLETED, HOURS_ESTIMATED, HOURS_ACTUAL from V_JOB_OPERATIONS where JOB = '{0}' and SUFFIX = '{1}' and LMO in ('L', 'M', 'O') and SEQ < '995000';",V.Args.sJob,V.Args.sSuf,V.Local.sSQL)
+F.ODBC.Connection!con.OpenCompanyConnection
+F.Data.DataTable.CreateFromSQL("dtJobOps","con",V.Local.sSQL)
+F.ODBC.Connection!con.Close
+F.Data.DataView.Create("dtJobOps","dvJobOps",22)
+'This will give us the job info
+
+
+F.Intrinsic.String.Build("Processing WO#{0}",V.Local.sWO,V.Local.sWaitDialog)
+F.Intrinsic.UI.ChangeWaitStatus(V.Local.sWaitDialog,-1)
+
+F.Intrinsic.Control.If(V.DataView.dtJobs!dvJob(0).DATE_CLOSED!FieldValTrim,=,"1/1/1900","and",V.Global.fShipQty,>,0)
+'Job is not closed so need to backflush job and close WO (if the WO is a child or doesn't cover the ship qty)
+	F.Intrinsic.String.Build("JOB = '{0}' and SUFFIX = '{1}'",V.DataView.dtJobs!dvJob(0).JOB!FieldValTrim,V.DataView.dtJobs!dvJob(0).SUFFIX!FieldValTrim,V.Local.sJobFilter)
+	F.Data.DataView.SetFilter("dtJobOps","dvJobOps",V.Local.sJobFilter)
+	F.Data.DataView.SetSort("dtJobOps","dvJobOps","SEQ asc")
+	F.Intrinsic.Control.For(V.Local.iCnt,V.DataView.dtJobOps!dvJobOps.RowCount--)
+	
+		F.Intrinsic.Control.If(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).FLAG_CLOSED!FieldValTrim,!=,"Y","and",V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).DATE_COMPLETED!FieldValTrim,=,"1/1/1900")
+		'Job sequence is not flagged as completed
+		'George Sandoval 3 May 2020.1 - Different logic because the Elseif above was not entering for material sequence in 2020.1. I am assuming we can no longer do If > elseif > elseif and instead need If > elseif > else. Nothing is happening here for outside and labor sequences anyways so commenting out.
+'			F.Intrinsic.Control.If(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).LMO!FieldValTrim,=,"L")
+			'is a Labor Sequence
+			'NOTE: right now customer only wants to have the inventory qtys processed
+'			F.Intrinsic.Control.ElseIf(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).LMO!FieldValTrim,=,"M")
+
+			F.Intrinsic.Control.If(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).LMO!FieldValTrim,=,"M")
+			'is a Material Sequence - need to issue material to job that has not been issued
+				F.Intrinsic.Math.Sub(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).HOURS_ESTIMATED!FieldVal,V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).HOURS_ACTUAL!FieldVal,V.Local.fQty)
+				'mult by 10000 because the first 4 nums on the right are assumed to come after the decimal on the upload
+				F.Intrinsic.Math.Mult(V.Local.fQty,10000,V.Local.fQty)
+				F.Intrinsic.String.Left(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).PART!FieldVal,17,V.Local.sPart)
+				F.Intrinsic.String.Right(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).PART!FieldVal,3,V.Local.sRev)
+				F.Data.DataTable.AddRow("450100","Part",V.Local.sPart,"Rev",V.Local.sRev,"Quantity",V.Local.fQty,"WONumber",V.DataView.dtJobs!dvJob(0).JOB!FieldVal,"WOSuffix",V.DataView.dtJobs!dvJob(0).SUFFIX!FieldVal,"WOSeq",V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).SEQ!FieldVal)
+				F.Intrinsic.Math.Div(V.Local.fQty,10000,V.Local.fQty)
+
+'			F.Intrinsic.Control.ElseIf(V.DataView.dtJobOps!dvJobOps(V.Local.iCnt).LMO!FieldValTrim,=,"O")			
+			'is an Outside Sequence
+			'NOTE: right now customer only wants to have the inventory qtys processed
+			F.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.iCnt)
+	F.Intrinsic.Control.If(V.DataTable.450100.RowCount,>,0)
+	'run callwrapper for issuing material in sync
+		F.Intrinsic.String.Build("Issuing Material for WO#{0}",V.Local.sWO,V.Local.sWaitDialog)
+		F.Intrinsic.UI.ChangeWaitStatus(V.Local.sWaitDialog)
+		F.Intrinsic.Control.CallSub(450100Sync)
+	F.Intrinsic.Control.EndIf
+	'Job sequences have been handled - WIP to FG
+	'Get Qty left on WO
+	F.Intrinsic.Math.Sub(V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.DataView.dtJobs!dvJob(0).QTY_COMPLETED!FieldVal,V.Local.fQty)
+	V.Local.fPer.Set(0)
+	
+	F.Intrinsic.Control.If(V.Local.sWO.Trim,=,V.Global.sTopWO.Trim)
+	'WO that is being processed is the top level one tied to the SO Line
+		F.Intrinsic.Control.If(V.Local.fQty,>=,V.Global.fShipQty)
+		'More WO Qty than what is being shipped - only issue the required amount for qty shipped
+			F.Data.DataTable.AddRow("2003","WONum",V.Global.sTopJob.Trim,"WOSuffix",V.Global.sTopSuf.Trim,"CloseWO","N","Quantity",V.Global.fShipQty.String,"PrintLabels","N","CostMethod",V.Global.sCostMethod,"UpdateInv","Y")
+			'Since not all the WO qty available is being processed, we can calculate the aproximate amount that is left for WIP to FG as a percent
+			F.Intrinsic.Math.Add(V.DataView.dtJobs!dvJob(0).QTY_COMPLETED!FieldVal,V.Global.fShipQty,V.Local.fRem)
+			F.Intrinsic.Math.Div(V.Global.fShipQty,V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.Local.fPer)
+			'Set the ship qty variable to 0
+			V.Global.fShipQty.Set(0)
+'		F.Intrinsic.Control.ElseIf(V.Local.fQty,<,V.Global.fShipQty)
+'George Sandoval 6 May 2022 - Change if statement structure to remove elseif 
+		F.Intrinsic.Control.Else(V.Local.fQty,<,V.Global.fShipQty)
+		'Less WO Qty than what is being shipped so it can all be issued
+			F.Data.DataTable.AddRow("2003","WONum",V.Global.sTopJob.Trim,"WOSuffix",V.Global.sTopSuf.Trim,"CloseWO","Y","Quantity",V.Local.fQty.String,"PrintLabels","N","CostMethod",V.Global.sCostMethod,"UpdateInv","Y")
+			V.Local.fRem.Set(0)
+			F.Intrinsic.Math.Div(V.Local.fQty,V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.Local.fPer)
+			'Subtract the WO qty from the shipped qty
+			F.Intrinsic.Math.Sub(V.Global.fShipQty,V.Local.fQty,V.Global.fShipQty)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Else
+	'WO that is being processed is a child WO that is not tied to the SO Line
+		F.Data.DataTable.AddRow("2003","WONum",V.Args.sJob.Trim,"WOSuffix",V.Args.sSuf.Trim,"CloseWO","Y","Quantity",V.Local.fQty.String,"PrintLabels","N","CostMethod",V.Global.sCostMethod,"UpdateInv","Y")
+		V.Local.fRem.Set(0)
+		F.Intrinsic.Math.Add(V.DataView.dtJobs!dvJob(0).QTY_COMPLETED!FieldVal,V.Local.fQty,V.Local.fRem)
+		F.Intrinsic.Math.Div(V.Local.fQty,V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.Local.fPer)
+	F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.If(V.DataTable.2003.RowCount,>,0)
+		F.Intrinsic.Math.Mult(V.Local.fPer,100,V.Local.fPer)
+		F.Intrinsic.Math.Sub(V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.Local.fRem,V.Local.fRem)
+		F.Intrinsic.Math.Div(V.Local.fRem,V.DataView.dtJobs!dvJob(0).QTY_ORDER!FieldVal,V.Local.fRem)
+		F.Intrinsic.Math.Mult(V.Local.fRem,100,V.Local.fRem)
+		F.Intrinsic.String.Build("WIP to FG {0}% of WO#{1}{2}Remaining: {3}%",V.Local.fPer.String,V.Local.sWO,V.Ambient.NewLine,V.Local.fRem.String,V.Local.sWaitDialog)
+		F.Intrinsic.UI.ChangeWaitStatus(V.Local.sWaitDialog)
+	'run callwrapper for WIP to FG in sync
+		'NOTE: This setup only works if Lot/Bin is turned off for the Part
+		'I don't think where would be an automated way to use lot/bin with this program without building a maintenance screen
+		F.Intrinsic.Control.CallSub(2003Sync)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+F.Data.DataTable.Close("dtJobOps")
+
+F.Intrinsic.String.Build("Processing of WO#{0} completed",V.Local.sWO,V.Local.sWaitDialog)
+F.Intrinsic.UI.ChangeWaitStatus(V.Local.sWaitDialog)
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {3}->{2}{1}Error Occurred {4} with description {5}{1}{1}GAB Version: {6}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Args.sOtherSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.EndTry
+Program.Sub.GetChildrenBackFlushWOs.End
+
+Program.Sub.Comments.Start
+${$5$}$2.0.0.0$}$2
+${$6$}$gsandoval$}$20220502140143546$}$pxyipsmdqasyAY7lJ5+YqAibKN4I37/Y2TRPIn1iA5hV9YUI8oALNp4B4/8xifBDxtDSpYjzYbbtxm5XVP4GzQ==
+Program.Sub.Comments.End
